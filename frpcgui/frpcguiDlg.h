@@ -45,13 +45,13 @@ public:
 	BOOL m_autoStart;		// 자동연결체크 컨트롤
 
 	// 멤버함수 선언
-	afx_msg LRESULT OnTrayIconNotify(WPARAM wParam, LPARAM lParam);
-	afx_msg void OnContextMenuShowWindow();
-	afx_msg void OnContextMenuExit();
-	afx_msg void OnDestroy();
-	afx_msg void OnClose();
-	void LoadConf();
-	void SaveConf();
-	afx_msg void OnBnClickedButtonStart();
-	afx_msg void OnBnClickedButtonStop();
+	afx_msg LRESULT OnTrayIconNotify(WPARAM wParam, LPARAM lParam); // 트레이 아이콘
+	afx_msg void OnContextMenuShowWindow();	// 트레이 컨텍스트 메뉴의 창보이기
+	afx_msg void OnContextMenuExit();		// 트레이 컨텍스트 메뉴의 종료
+	afx_msg void OnDestroy();	// 종료 처리
+	afx_msg void OnClose();		// 닫기 처리
+	void LoadConf();			// 설정파일 읽기
+	void SaveConf();			// 설정파일 저장
+	afx_msg void OnBnClickedButtonStart();	// 시작 버튼
+	afx_msg void OnBnClickedButtonStop();	// 중지 버튼
 };
