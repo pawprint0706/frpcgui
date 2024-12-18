@@ -828,8 +828,16 @@ UINT CfrpcguiDlg::LogReaderThread(LPVOID pParam)
 			// 라인이 비어있을 수 있으므로 체크
 			if (!line.empty())
 			{
-				CString wLine = CA2T(line.c_str(), CP_ACP);
-				pDlg->PostMessage(WM_USER_LOG_LINE, 0, (LPARAM)new CString(wLine));
+				// UTF-8로 디코딩
+				int wideLen = MultiByteToWideChar(CP_UTF8, 0, line.c_str(), (int)line.size(), NULL, 0);
+				if (wideLen > 0)
+				{
+					std::wstring wstr;
+					wstr.resize(wideLen);
+					MultiByteToWideChar(CP_UTF8, 0, line.c_str(), (int)line.size(), &wstr[0], wideLen);
+					CString wLine(wstr.c_str());
+					pDlg->PostMessage(WM_USER_LOG_LINE, 0, (LPARAM)new CString(wLine));
+				}
 			}
 		}
 
@@ -837,8 +845,17 @@ UINT CfrpcguiDlg::LogReaderThread(LPVOID pParam)
 		if (buffer.size() > 1024)
 		{
 			// 임시로 누적된 데이터를 한 번에 출력
-			CString wLine = CA2T(buffer.c_str(), CP_ACP);
-			pDlg->PostMessage(WM_USER_LOG_LINE, 0, (LPARAM)new CString(wLine));
+			// UTF-8로 디코딩
+			int wideLen = MultiByteToWideChar(CP_UTF8, 0, buffer.c_str(), (int)buffer.size(), NULL, 0);
+			if (wideLen > 0)
+			{
+				std::wstring wstr;
+				wstr.resize(wideLen);
+				MultiByteToWideChar(CP_UTF8, 0, buffer.c_str(), (int)buffer.size(), &wstr[0], wideLen);
+				CString wLine(wstr.c_str());
+				pDlg->PostMessage(WM_USER_LOG_LINE, 0, (LPARAM)new CString(wLine));
+			}
+			// 버퍼 비우기
 			buffer.clear();
 		}
 	}
@@ -846,8 +863,16 @@ UINT CfrpcguiDlg::LogReaderThread(LPVOID pParam)
 	// 남은 데이터 출력
 	if (!buffer.empty())
 	{
-		CString wLine = CA2T(buffer.c_str(), CP_ACP);
-		pDlg->PostMessage(WM_USER_LOG_LINE, 0, (LPARAM)new CString(wLine));
+		// UTF-8로 디코딩
+		int wideLen = MultiByteToWideChar(CP_UTF8, 0, buffer.c_str(), (int)buffer.size(), NULL, 0);
+		if (wideLen > 0)
+		{
+			std::wstring wstr;
+			wstr.resize(wideLen);
+			MultiByteToWideChar(CP_UTF8, 0, buffer.c_str(), (int)buffer.size(), &wstr[0], wideLen);
+			CString wLine(wstr.c_str());
+			pDlg->PostMessage(WM_USER_LOG_LINE, 0, (LPARAM)new CString(wLine));
+		}
 	}
 
 	return 0;
