@@ -98,7 +98,8 @@ BEGIN_MESSAGE_MAP(CfrpcguiDlg, CDialogEx)
 	ON_WM_PAINT()
 	ON_WM_QUERYDRAGICON()
 	ON_WM_DESTROY()
-	ON_MESSAGE(WM_USER_TRAY_ICON, &CfrpcguiDlg::OnTrayIconNotify) // 사용자 정의 메시지
+	ON_MESSAGE(WM_USER_TRAY_ICON, &CfrpcguiDlg::OnTrayIconNotify)
+	ON_MESSAGE(WM_USER_HIDE_WINDOW, &CfrpcguiDlg::OnHideWindow)
 	ON_COMMAND(ID_CONTEXTMENU_SHOW_WINDOW, &CfrpcguiDlg::OnContextMenuShowWindow)
 	ON_COMMAND(ID_CONTEXTMENU_EXIT, &CfrpcguiDlg::OnContextMenuExit)
 	ON_WM_CLOSE()
@@ -155,6 +156,10 @@ BOOL CfrpcguiDlg::OnInitDialog()
 
 	// 버튼 컨트롤 비활성화
 	GetDlgItem(IDC_BUTTON_STOP)->EnableWindow(FALSE);
+
+	// 창 숨기기 메시지 예약
+	PostMessage(WM_SYSCOMMAND, SC_MINIMIZE);
+	PostMessage(WM_USER_HIDE_WINDOW);
 
 	// 설정 로딩 끝난 후 auto_start 값이 TRUE면 자동 실행 시도
 	if (m_autoStart)
@@ -262,6 +267,13 @@ LRESULT CfrpcguiDlg::OnTrayIconNotify(WPARAM wParam, LPARAM lParam)
 			break;
 		}
 	}
+	return 0;
+}
+
+
+LRESULT CfrpcguiDlg::OnHideWindow(WPARAM wParam, LPARAM lParam)
+{
+	ShowWindow(SW_HIDE);
 	return 0;
 }
 

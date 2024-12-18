@@ -7,8 +7,9 @@
 #include <string>
 
 // 사용자 정의 메시지
-#define WM_USER_TRAY_ICON (WM_USER + 100) // 트레이 아이콘 제어용
-#define WM_USER_LOG_LINE (WM_USER + 101) // 로그라인 수신용
+#define WM_USER_TRAY_ICON (WM_USER + 100)	// 트레이 아이콘 제어용
+#define WM_USER_HIDE_WINDOW (WM_USER + 101)	// 창 숨기기용
+#define WM_USER_LOG_LINE (WM_USER + 102)	// 로그라인 수신용
 
 // 포트 재시도 최대 횟수
 #define MAX_RETRIES 30
@@ -61,6 +62,7 @@ public:
 
 	// 멤버함수 선언
 	afx_msg LRESULT OnTrayIconNotify(WPARAM wParam, LPARAM lParam); // 트레이 아이콘
+	afx_msg LRESULT OnHideWindow(WPARAM wParam, LPARAM lParam);		// 창 숨기기
 	afx_msg void OnContextMenuShowWindow();	// 트레이 컨텍스트 메뉴의 창보이기
 	afx_msg void OnContextMenuExit();		// 트레이 컨텍스트 메뉴의 종료
 	afx_msg void OnDestroy();	// 종료 처리
