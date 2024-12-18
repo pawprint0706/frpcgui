@@ -8,8 +8,8 @@
 #include "afxdialogex.h"
 #include <vector>
 #include <map>
-#include <string>
 #include <sstream>
+#include <VersionHelpers.h>
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -23,12 +23,12 @@ class CAboutDlg : public CDialogEx
 public:
 	CAboutDlg();
 
-// 대화 상자 데이터입니다.
+	// 대화 상자 데이터입니다.
 #ifdef AFX_DESIGN_TIME
 	enum { IDD = IDD_ABOUTBOX };
 #endif
 
-	protected:
+protected:
 	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV 지원입니다.
 
 // 구현입니다.
@@ -271,17 +271,6 @@ void CfrpcguiDlg::OnClose()
 }
 
 
-// WhiteSpace 제거
-static std::wstring Trim(const std::wstring& str)
-{
-	const std::wstring whitespace = L" \t\r\n";
-	size_t start = str.find_first_not_of(whitespace);
-	if (start == std::wstring::npos) return L"";
-	size_t end = str.find_last_not_of(whitespace);
-	return str.substr(start, end - start + 1);
-}
-
-
 void CfrpcguiDlg::LoadConf()
 {
 	TCHAR currentDir[MAX_PATH];
@@ -289,7 +278,6 @@ void CfrpcguiDlg::LoadConf()
 	CString path;
 	path.Format(_T("%s\\frpc.ini"), currentDir);
 
-	// 파일 읽기 (CP949로 인코딩된 텍스트)
 	CFile file;
 	if (!file.Open(path, CFile::modeRead | CFile::typeBinary)) {
 		// 파일이 없거나 읽기 실패 시 기본값 설정
@@ -309,8 +297,8 @@ void CfrpcguiDlg::LoadConf()
 	file.Read(buffer.data(), (UINT)fileSize);
 	file.Close();
 
-	// CP949 → WideChar 변환
-	int wideLen = MultiByteToWideChar(CP_ACP, 0, (LPCSTR)buffer.data(), (int)fileSize, NULL, 0);
+	// UTF-8 → WideChar 변환
+	int wideLen = MultiByteToWideChar(CP_UTF8, 0, (LPCSTR)buffer.data(), (int)fileSize, NULL, 0);
 	if (wideLen <= 0) {
 		// 변환 실패 시 기본값 설정
 		m_serverAddr = _T("127.0.0.1");
@@ -326,7 +314,7 @@ void CfrpcguiDlg::LoadConf()
 
 	std::wstring wtext;
 	wtext.resize(wideLen);
-	MultiByteToWideChar(CP_ACP, 0, (LPCSTR)buffer.data(), (int)fileSize, &wtext[0], wideLen);
+	MultiByteToWideChar(CP_UTF8, 0, (LPCSTR)buffer.data(), (int)fileSize, &wtext[0], wideLen);
 
 	// INI 파싱: [섹션], key=value
 	std::map<std::wstring, std::map<std::wstring, std::wstring>> iniData;
@@ -393,12 +381,11 @@ void CfrpcguiDlg::SaveConf()
 
 	std::wstring wtext = ss.str();
 
-	// 유니코드 → CP949 변환
-	int mbLen = WideCharToMultiByte(CP_ACP, 0, wtext.c_str(), (int)wtext.size(), NULL, 0, NULL, NULL);
+	// 유니코드 → UTF-8 변환 (BOM 없이)
+	int mbLen = WideCharToMultiByte(CP_UTF8, 0, wtext.c_str(), (int)wtext.size(), NULL, 0, NULL, NULL);
 	std::vector<char> mbBuf(mbLen, 0);
-	WideCharToMultiByte(CP_ACP, 0, wtext.c_str(), (int)wtext.size(), mbBuf.data(), mbLen, NULL, NULL);
+	WideCharToMultiByte(CP_UTF8, 0, wtext.c_str(), (int)wtext.size(), mbBuf.data(), mbLen, NULL, NULL);
 
-	// 파일 쓰기
 	TCHAR currentDir[MAX_PATH];
 	GetCurrentDirectory(MAX_PATH, currentDir);
 	CString path;
@@ -416,10 +403,153 @@ void CfrpcguiDlg::OnBnClickedButtonStart()
 {
 	// 설정파일 저장
 	SaveConf();
+
+	// 암호화된 frpc.exe를 복호화 하고 실행
+	if (ExtractAndRunEncryptedExeFromResource())
+	{
+		AfxMessageBox(_T("성공!"));
+	}
+	else
+	{
+		AfxMessageBox(_T("실패!"));
+	}
 }
 
 
 void CfrpcguiDlg::OnBnClickedButtonStop()
 {
-	// TODO: 여기에 컨트롤 알림 처리기 코드를 추가합니다.
+	// 프로세스 핸들 닫기 전 대기
+	WaitForSingleObject(m_frpcProcess.hProcess, INFINITE);
+
+	// 프로세스 종료 시 HANDLE 정리
+	CloseHandle(m_frpcProcess.hThread);
+	CloseHandle(m_frpcProcess.hProcess);
+
+	/*
+	// 프로세스 종료 후 frpc.exe 삭제
+	if (!DeleteFile(m_szTargetFile)) {
+		// 만약 즉각 삭제 실패 시, 잠시 대기 후 재시도 로직 등을 구현할 수도 있음.
+		AfxMessageBox(_T("frpc.exe 삭제 실패"));
+	}
+	*/
 }
+
+
+std::wstring CfrpcguiDlg::Trim(const std::wstring& str)
+{
+	const std::wstring whitespace = L" \t\r\n";
+	size_t start = str.find_first_not_of(whitespace);
+	if (start == std::wstring::npos) return L"";
+	size_t end = str.find_last_not_of(whitespace);
+	return str.substr(start, end - start + 1);
+}
+
+
+void CfrpcguiDlg::XorData(BYTE* pData, DWORD dwSize, const BYTE* pKey, size_t keyLen)
+{
+	for (DWORD i = 0; i < dwSize; i++)
+	{
+		pData[i] ^= pKey[i % keyLen];
+	}
+}
+
+
+BOOL CfrpcguiDlg::ExtractAndRunEncryptedExeFromResource()
+{
+	// 윈도우 버전 체크
+	LPCTSTR pResourceName;
+	if (IsWindows7OrGreater())
+	{
+		if (!IsWindows8OrGreater())
+		{
+			// 윈도우 7의 경우
+			pResourceName = MAKEINTRESOURCE(IDR_FRPC_ENC_WIN7);
+		}
+		else
+		{
+			// 윈도우 8 이상인 경우
+			pResourceName = MAKEINTRESOURCE(IDR_FRPC_ENC);
+		}
+	}
+	else
+	{
+		// 윈도우 Vista, XP 등 (지원하지 않음)
+		pResourceName = MAKEINTRESOURCE(IDR_FRPC_ENC_WIN7);
+	}
+	// 리소스에서 데이터 로드
+	HRSRC hRes = FindResource(AfxGetResourceHandle(), pResourceName, RT_RCDATA);
+	if (!hRes)
+	{
+		AfxMessageBox(_T("암호화된 리소스를 찾을 수 없습니다."));
+		return FALSE;
+	}
+	DWORD dwSize = SizeofResource(AfxGetResourceHandle(), hRes);
+	HGLOBAL hResData = LoadResource(AfxGetResourceHandle(), hRes);
+	if (!hResData)
+	{
+		AfxMessageBox(_T("리소스 로드 실패"));
+		return FALSE;
+	}
+
+	BYTE* pEncData = (BYTE*)LockResource(hResData);
+	if (!pEncData)
+	{
+		AfxMessageBox(_T("리소스 잠금 실패"));
+		return FALSE;
+	}
+
+	// 리소스 데이터를 메모리에 복사
+	std::vector<BYTE> buffer(pEncData, pEncData + dwSize);
+
+	// XOR 키 (20바이트 랜덤 문자열)
+	const BYTE key[] = "LfZA*j@v%&6ZnDF8xjr%";
+
+	// XOR 복호화
+	XorData(buffer.data(), dwSize, key, sizeof(key) - 1);
+	// sizeof(key)-1을 사용한 이유: key는 널 종료 문자('\0')가 있으므로 실제 유효한 키 길이는 20바이트.
+	// 여기서 문자열 리터럴 "..."은 끝에 널 문자가 추가되므로 21바이트 길이를 가지며, 실제 유효 키는 20바이트.
+
+	// 현재 실행 파일이 위치한 경로 얻기
+	TCHAR szModulePath[MAX_PATH] = { 0 };
+	if (GetModuleFileName(NULL, szModulePath, MAX_PATH) == 0) {
+		AfxMessageBox(_T("현재 실행 경로를 얻을 수 없습니다."));
+		return FALSE;
+	}
+
+	// 파일명 부분 제거하여 디렉토리 경로만 남기기
+	PathRemoveFileSpec(szModulePath);
+
+	// 실행 파일명을 "frpc.exe"로 지정
+	ZeroMemory(m_szTargetFile, MAX_PATH);
+	_tcscpy_s(m_szTargetFile, szModulePath);
+	PathAppend(m_szTargetFile, _T("frpc.exe"));
+
+	// frpc.exe 파일을 현재 디렉토리에 생성
+	HANDLE hFile = CreateFile(m_szTargetFile, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (hFile == INVALID_HANDLE_VALUE) {
+		AfxMessageBox(_T("frpc.exe 파일 생성 실패"));
+		return FALSE;
+	}
+
+	DWORD dwWritten = 0;
+	BOOL bWrite = WriteFile(hFile, buffer.data(), dwSize, &dwWritten, NULL);
+	CloseHandle(hFile);
+
+	if (!bWrite || dwWritten != dwSize) {
+		AfxMessageBox(_T("frpc.exe 파일 쓰기 실패"));
+		return FALSE;
+	}
+
+	// frpc.exe 실행: CreateProcess 사용
+	STARTUPINFO si = { 0 };
+	si.cb = sizeof(si);
+	m_frpcProcess = { 0 };
+
+	if (!CreateProcess(m_szTargetFile, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &m_frpcProcess)) {
+		AfxMessageBox(_T("frpc.exe 실행 실패"));
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
