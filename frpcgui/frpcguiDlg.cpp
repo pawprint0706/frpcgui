@@ -149,8 +149,12 @@ BOOL CfrpcguiDlg::OnInitDialog()
 	wcscpy_s(m_trayIconData.szTip, _T("FRP GUI Client"));
 	// 트레이 아이콘 표시
 	Shell_NotifyIcon(NIM_ADD, &m_trayIconData);
+	
 	// 설정파일 불러오기
 	LoadConf();
+
+	// 버튼 컨트롤 비활성화
+	GetDlgItem(IDC_BUTTON_STOP)->EnableWindow(FALSE);
 
 	// 설정 로딩 끝난 후 auto_start 값이 TRUE면 자동 실행 시도
 	if (m_autoStart)
@@ -559,6 +563,31 @@ void CfrpcguiDlg::XorData(BYTE* pData, DWORD dwSize, const BYTE* pKey, size_t ke
 
 BOOL CfrpcguiDlg::ExtractAndRunEncryptedExeFromResource()
 {
+	// 현재 실행 파일이 위치한 경로 얻기
+	TCHAR szModulePath[MAX_PATH] = { 0 };
+	if (GetModuleFileName(NULL, szModulePath, MAX_PATH) == 0) {
+		AddLogMessage(_T("현재 실행 경로를 얻을 수 없습니다."));
+		return FALSE;
+	}
+
+	// 파일명 부분 제거하여 디렉토리 경로만 남기기
+	PathRemoveFileSpec(szModulePath);
+
+	// 실행 파일명을 "frpc.exe"로 지정
+	ZeroMemory(m_szTargetFile, MAX_PATH);
+	_tcscpy_s(m_szTargetFile, szModulePath);
+	PathAppend(m_szTargetFile, _T("frpc.exe"));
+
+	// frpc.exe 파일이 이미 존재한다면 삭제 시도
+	if (PathFileExists(m_szTargetFile))
+	{
+		if (!DeleteFile(m_szTargetFile))
+		{
+			AddLogMessage(_T("기존 frpc.exe 파일 삭제 실패. 작업 관리자에서 frpc.exe 프로세스를 종료해주세요."));
+			return FALSE;
+		}
+	}
+
 	// 윈도우 버전 체크
 	LPCTSTR pResourceName;
 	if (IsWindows7OrGreater())
@@ -579,6 +608,7 @@ BOOL CfrpcguiDlg::ExtractAndRunEncryptedExeFromResource()
 		// 윈도우 Vista, XP 등 (지원하지 않음)
 		pResourceName = MAKEINTRESOURCE(IDR_FRPC_ENC_WIN7);
 	}
+
 	// 리소스에서 데이터 로드
 	HRSRC hRes = FindResource(AfxGetResourceHandle(), pResourceName, RT_RCDATA);
 	if (!hRes)
@@ -607,24 +637,8 @@ BOOL CfrpcguiDlg::ExtractAndRunEncryptedExeFromResource()
 	const BYTE key[] = "LfZA*j@v%&6ZnDF8xjr%";
 
 	// XOR 복호화
-	XorData(buffer.data(), dwSize, key, sizeof(key) - 1);
 	// sizeof(key)-1을 사용한 이유: key는 널 종료 문자('\0')가 있으므로 실제 유효한 키 길이는 20바이트.
-	// 여기서 문자열 리터럴 "..."은 끝에 널 문자가 추가되므로 21바이트 길이를 가지며, 실제 유효 키는 20바이트.
-
-	// 현재 실행 파일이 위치한 경로 얻기
-	TCHAR szModulePath[MAX_PATH] = { 0 };
-	if (GetModuleFileName(NULL, szModulePath, MAX_PATH) == 0) {
-		AddLogMessage(_T("현재 실행 경로를 얻을 수 없습니다."));
-		return FALSE;
-	}
-
-	// 파일명 부분 제거하여 디렉토리 경로만 남기기
-	PathRemoveFileSpec(szModulePath);
-
-	// 실행 파일명을 "frpc.exe"로 지정
-	ZeroMemory(m_szTargetFile, MAX_PATH);
-	_tcscpy_s(m_szTargetFile, szModulePath);
-	PathAppend(m_szTargetFile, _T("frpc.exe"));
+	XorData(buffer.data(), dwSize, key, sizeof(key) - 1);
 
 	// frpc.exe 파일을 현재 디렉토리에 생성
 	HANDLE hFile = CreateFile(m_szTargetFile, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -850,18 +864,15 @@ LRESULT CfrpcguiDlg::OnLogLine(WPARAM wParam, LPARAM lParam)
 	m_edit_output.SetSel(len, len);
 	m_edit_output.ReplaceSel(line + _T("\r\n"));
 
-	// 파싱 로직 강화
 	CString lowerLine = line;
 	lowerLine.MakeLower();
 
-	if (lowerLine.Find(_T("port already used")) != -1 ||
-		lowerLine.Find(_T("already in use")) != -1 ||
-		(lowerLine.Find(_T("proxy")) != -1 && lowerLine.Find(_T("already exists")) != -1))
+	if (lowerLine.Find(_T("port already used")) != -1 || lowerLine.Find(_T("already in use")) != -1)
 	{
 		if (m_retryCount < MAX_RETRIES && WaitForSingleObject(m_stopEvent, 0) == WAIT_TIMEOUT)
 		{
-			m_retryCount++;
 			AddLogMessage(_T("포트 충돌 발생, 다른 포트로 재시도합니다."));
+			m_retryCount++;
 			m_remotePort = 0; // 랜덤 포트 할당
 			StopFrpcProcess();
 			StartFrpcProcess(TRUE);
@@ -870,7 +881,6 @@ LRESULT CfrpcguiDlg::OnLogLine(WPARAM wParam, LPARAM lParam)
 		{
 			AddLogMessage(_T("포트 재시도 횟수를 초과했습니다. 프로세스를 중지합니다."));
 			StopFrpcProcess();
-			// 재시도 실패 후 UI 복구
 			GetDlgItem(IDC_BUTTON_START)->EnableWindow(TRUE);
 			GetDlgItem(IDC_BUTTON_STOP)->EnableWindow(FALSE);
 			GetDlgItem(IDC_EDIT_DEVICE_NAME)->EnableWindow(TRUE);
@@ -881,10 +891,40 @@ LRESULT CfrpcguiDlg::OnLogLine(WPARAM wParam, LPARAM lParam)
 			GetDlgItem(IDC_EDIT_REMOTE_PORT)->EnableWindow(TRUE);
 		}
 	}
-
-	if (lowerLine.Find(_T("start proxy success")) != -1)
+	else if (lowerLine.Find(_T("proxy")) != -1 && lowerLine.Find(_T("already exists")) != -1)
+	{
+		AddLogMessage(_T("중복된 장치명입니다. 장치명을 변경해주세요."));
+		StopFrpcProcess();
+		GetDlgItem(IDC_BUTTON_START)->EnableWindow(TRUE);
+		GetDlgItem(IDC_BUTTON_STOP)->EnableWindow(FALSE);
+		GetDlgItem(IDC_EDIT_DEVICE_NAME)->EnableWindow(TRUE);
+		GetDlgItem(IDC_EDIT_SERVER_ADDRESS)->EnableWindow(TRUE);
+		GetDlgItem(IDC_EDIT_SERVER_PORT)->EnableWindow(TRUE);
+		GetDlgItem(IDC_EDIT_AUTH_TOKEN)->EnableWindow(TRUE);
+		GetDlgItem(IDC_EDIT_LOCAL_PORT)->EnableWindow(TRUE);
+		GetDlgItem(IDC_EDIT_REMOTE_PORT)->EnableWindow(TRUE);
+	}
+	else if (lowerLine.Find(_T("token in login doesn't match")) != -1)
+	{
+		AddLogMessage(_T("토큰이 일치하지 않습니다. 토큰을 확인해주세요."));
+		StopFrpcProcess();
+		GetDlgItem(IDC_BUTTON_START)->EnableWindow(TRUE);
+		GetDlgItem(IDC_BUTTON_STOP)->EnableWindow(FALSE);
+		GetDlgItem(IDC_EDIT_DEVICE_NAME)->EnableWindow(TRUE);
+		GetDlgItem(IDC_EDIT_SERVER_ADDRESS)->EnableWindow(TRUE);
+		GetDlgItem(IDC_EDIT_SERVER_PORT)->EnableWindow(TRUE);
+		GetDlgItem(IDC_EDIT_AUTH_TOKEN)->EnableWindow(TRUE);
+		GetDlgItem(IDC_EDIT_LOCAL_PORT)->EnableWindow(TRUE);
+		GetDlgItem(IDC_EDIT_REMOTE_PORT)->EnableWindow(TRUE);
+	}
+	else if (lowerLine.Find(_T("login to server success")) != -1)
+	{
+		AddLogMessage(_T("서버에 성공적으로 접속하였습니다."));
+	}
+	else if (lowerLine.Find(_T("start proxy success")) != -1)
 	{
 		m_successStarted = TRUE;
+		AddLogMessage(_T("프록시가 성공적으로 시작되었습니다."));
 		GetDlgItem(IDC_BUTTON_START)->EnableWindow(FALSE);
 		GetDlgItem(IDC_BUTTON_STOP)->EnableWindow(TRUE);
 		GetDlgItem(IDC_EDIT_DEVICE_NAME)->EnableWindow(FALSE);
@@ -893,12 +933,6 @@ LRESULT CfrpcguiDlg::OnLogLine(WPARAM wParam, LPARAM lParam)
 		GetDlgItem(IDC_EDIT_AUTH_TOKEN)->EnableWindow(FALSE);
 		GetDlgItem(IDC_EDIT_LOCAL_PORT)->EnableWindow(FALSE);
 		GetDlgItem(IDC_EDIT_REMOTE_PORT)->EnableWindow(FALSE);
-		AddLogMessage(_T("프록시가 성공적으로 시작되었습니다."));
-	}
-
-	if (lowerLine.Find(_T("login to server success")) != -1)
-	{
-		AddLogMessage(_T("서버에 성공적으로 접속하였습니다."));
 	}
 
 	return 0;

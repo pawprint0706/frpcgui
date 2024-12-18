@@ -11,7 +11,7 @@
 #define WM_USER_LOG_LINE (WM_USER + 101) // 로그라인 수신용
 
 // 포트 재시도 최대 횟수
-#define MAX_RETRIES 10
+#define MAX_RETRIES 30
 
 // CfrpcguiDlg 대화 상자
 class CfrpcguiDlg : public CDialogEx
