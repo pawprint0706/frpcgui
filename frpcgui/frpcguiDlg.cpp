@@ -31,7 +31,7 @@ public:
 protected:
 	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV 지원입니다.
 
-// 구현입니다.
+														// 구현입니다.
 protected:
 	DECLARE_MESSAGE_MAP()
 };
@@ -61,8 +61,15 @@ CfrpcguiDlg::CfrpcguiDlg(CWnd* pParent /*=NULL*/)
 	, m_localPort(9500)
 	, m_remotePort(9999)
 	, m_autoStart(FALSE)
+	, m_retryCount(0)
+	, m_successStarted(FALSE)
+	, m_stopEvent(TRUE, FALSE)
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
+	m_frpcProcess.hProcess = NULL;
+	m_frpcProcess.hThread = NULL;
+	m_hChildStd_OUT_Rd = NULL;
+	m_hChildStd_OUT_Wr = NULL;
 }
 
 
@@ -97,6 +104,7 @@ BEGIN_MESSAGE_MAP(CfrpcguiDlg, CDialogEx)
 	ON_WM_CLOSE()
 	ON_BN_CLICKED(IDC_BUTTON_START, &CfrpcguiDlg::OnBnClickedButtonStart)
 	ON_BN_CLICKED(IDC_BUTTON_STOP, &CfrpcguiDlg::OnBnClickedButtonStop)
+	ON_MESSAGE(WM_USER_LOG_LINE, &CfrpcguiDlg::OnLogLine)
 END_MESSAGE_MAP()
 
 
@@ -131,7 +139,7 @@ BOOL CfrpcguiDlg::OnInitDialog()
 	SetIcon(m_hIcon, TRUE);			// 큰 아이콘을 설정합니다.
 	SetIcon(m_hIcon, FALSE);		// 작은 아이콘을 설정합니다.
 
-	// 트레이 아이콘 설정
+									// 트레이 아이콘 설정
 	m_trayIconData.cbSize = sizeof(NOTIFYICONDATA);
 	m_trayIconData.hWnd = this->GetSafeHwnd();
 	m_trayIconData.uID = 1; // 트레이 아이콘 ID
@@ -141,10 +149,6 @@ BOOL CfrpcguiDlg::OnInitDialog()
 	wcscpy_s(m_trayIconData.szTip, _T("FRP GUI Client"));
 	// 트레이 아이콘 표시
 	Shell_NotifyIcon(NIM_ADD, &m_trayIconData);
-
-	// 스레드 정지 요청 이벤트 리셋
-	m_stopEvent.ResetEvent();
-
 	// 설정파일 불러오기
 	LoadConf();
 
@@ -211,37 +215,47 @@ HCURSOR CfrpcguiDlg::OnQueryDragIcon()
 
 LRESULT CfrpcguiDlg::OnTrayIconNotify(WPARAM wParam, LPARAM lParam)
 {
-	if (lParam == WM_RBUTTONUP) // 우클릭 이벤트 발생 시
+	if (wParam == m_trayIconData.uID)
 	{
-		CPoint point;
-		GetCursorPos(&point);
-
-		// 컨텍스트 메뉴 로드
 		CMenu menu;
-		if (menu.LoadMenu(IDR_MENU_CONTEXT_MENU))
+		CPoint point;
+		switch (lParam)
 		{
-			CMenu* pSubMenu = menu.GetSubMenu(0);
-			if (pSubMenu)
+		case WM_LBUTTONDBLCLK: // 좌더블클릭 이벤트 발생 시
+			OnContextMenuShowWindow();
+			break;
+		case WM_RBUTTONUP: // 우클릭 이벤트 발생 시
+			// 커서 위치 찾기
+			GetCursorPos(&point);
+			// 컨텍스트 메뉴 로드
+			if (menu.LoadMenu(IDR_MENU_CONTEXT_MENU))
 			{
-				// SetForegroundWindow를 호출해 팝업 메뉴가 닫히지 않도록 설정
-				SetForegroundWindow();
-
-				// 트레이 메뉴 표시 후 선택된 명령 ID 반환
-				int nCmd = pSubMenu->TrackPopupMenu(TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, this);
-
-				// 반환된 명령 ID에 따라 핸들러 실행
-				switch (nCmd)
+				CMenu* pSubMenu = menu.GetSubMenu(0);
+				if (pSubMenu)
 				{
-				case ID_CONTEXTMENU_SHOW_WINDOW:
-					OnContextMenuShowWindow();
-					break;
-				case ID_CONTEXTMENU_EXIT:
-					OnContextMenuExit();
-					break;
-				default:
-					break;
+					// SetForegroundWindow를 호출해 팝업 메뉴가 닫히지 않도록 설정
+					SetForegroundWindow();
+
+					// 트레이 메뉴 표시 후 선택된 명령 ID 반환
+					int nCmd = pSubMenu->TrackPopupMenu(TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, this);
+
+					// 반환된 명령 ID에 따라 핸들러 실행
+					switch (nCmd)
+					{
+					case ID_CONTEXTMENU_SHOW_WINDOW:
+						OnContextMenuShowWindow();
+						break;
+					case ID_CONTEXTMENU_EXIT:
+						OnContextMenuExit();
+						break;
+					default:
+						break;
+					}
 				}
 			}
+			break;
+		default:
+			break;
 		}
 	}
 	return 0;
@@ -259,12 +273,50 @@ void CfrpcguiDlg::OnContextMenuShowWindow()
 
 void CfrpcguiDlg::OnContextMenuExit()
 {
-	// 설정파일 저장
-	SaveConf();
-	// 트레이 아이콘 제거
-	Shell_NotifyIcon(NIM_DELETE, &m_trayIconData);
-	// 프로그램 종료
-	PostQuitMessage(0);
+	// 현재 frpc 프로세스 실행 상태 확인
+	BOOL isFrpcRunning = FALSE;
+	if (m_frpcProcess.hProcess != NULL && WaitForSingleObject(m_frpcProcess.hProcess, 0) == WAIT_TIMEOUT) {
+		isFrpcRunning = TRUE;
+	}
+
+	if (isFrpcRunning)
+	{
+		// 프록시 실행 중이므로 경고 메시지 출력
+		int result = MessageBox(_T("현재 연결이 끊어집니다. 종료하시겠습니까?"), _T("종료 확인"), MB_YESNO | MB_ICONQUESTION);
+		if (result == IDYES)
+		{
+			// 프록시 종료
+			StopFrpcProcess();
+
+			// frpc.exe 파일 삭제 시도
+			if (!DeleteFile(m_szTargetFile)) {
+				AddLogMessage(_T("frpc.exe 파일 삭제 실패 - 잠시 후 재시도"));
+				Sleep(500);
+				DeleteFile(m_szTargetFile);
+			}
+
+			// 설정 파일 저장
+			SaveConf();
+
+			// 트레이 아이콘 제거
+			Shell_NotifyIcon(NIM_DELETE, &m_trayIconData);
+
+			// 프로그램 종료
+			PostQuitMessage(0);
+		}
+		else
+		{
+			// 사용자가 '아니오' 선택 시 종료 취소
+			return;
+		}
+	}
+	else
+	{
+		// frpc 미실행 상태이면 바로 종료
+		SaveConf();
+		Shell_NotifyIcon(NIM_DELETE, &m_trayIconData);
+		PostQuitMessage(0);
+	}
 }
 
 
@@ -413,10 +465,22 @@ void CfrpcguiDlg::SaveConf()
 
 void CfrpcguiDlg::OnBnClickedButtonStart()
 {
+	// 컨트롤의 값을 가져오기
+	UpdateData(TRUE);
+	// frpc가 이미 실행 중인지 조사
+	if (m_frpcProcess.hProcess != NULL && WaitForSingleObject(m_frpcProcess.hProcess, 0) == WAIT_TIMEOUT)
+	{
+		MessageBox(_T("frpc가 이미 실행 중입니다."), _T("경고"));
+		return;
+	}
+	// 입력 값 검증
+	if (m_serverAddr.Trim().IsEmpty())
+	{
+		MessageBox(_T("서버 주소를 입력하세요."), _T("오류"));
+		return;
+	}
 	// 설정파일 저장
 	SaveConf();
-
-	// frpc.exe 복호화 후 실행 부분은 기존 코드 유지
 	// ExtractAndRunEncryptedExeFromResource() 호출 후,
 	// 성공 시 StartFrpcProcess() 호출
 	if (!ExtractAndRunEncryptedExeFromResource())
@@ -424,11 +488,22 @@ void CfrpcguiDlg::OnBnClickedButtonStart()
 		AddLogMessage(_T("frpc.exe 복호화/생성 실패"));
 		return;
 	}
+	// 버튼 컨트롤 비활성화
+	GetDlgItem(IDC_BUTTON_START)->EnableWindow(FALSE);
+	GetDlgItem(IDC_BUTTON_STOP)->EnableWindow(TRUE);
+	// 이벤트 초기화 및 재시도 변수 리셋
+	m_stopEvent.ResetEvent();
+	m_retryCount = 0;
+	m_successStarted = FALSE;
+
+	AddLogMessage(_T("frpc 시작 시도 중..."));
 
 	if (!StartFrpcProcess(FALSE))
 	{
 		AddLogMessage(_T("frpc 프로세스 시작 실패"));
-		return;
+		// 버튼 컨트롤 비활성화
+		GetDlgItem(IDC_BUTTON_START)->EnableWindow(TRUE);
+		GetDlgItem(IDC_BUTTON_STOP)->EnableWindow(FALSE);
 	}
 }
 
@@ -451,6 +526,7 @@ void CfrpcguiDlg::OnBnClickedButtonStop()
 
 	// 프로세스 종료 처리 후
 	GetDlgItem(IDC_BUTTON_START)->EnableWindow(TRUE);
+	GetDlgItem(IDC_BUTTON_STOP)->EnableWindow(FALSE);
 	GetDlgItem(IDC_EDIT_DEVICE_NAME)->EnableWindow(TRUE);
 	GetDlgItem(IDC_EDIT_SERVER_ADDRESS)->EnableWindow(TRUE);
 	GetDlgItem(IDC_EDIT_SERVER_PORT)->EnableWindow(TRUE);
@@ -524,7 +600,6 @@ BOOL CfrpcguiDlg::ExtractAndRunEncryptedExeFromResource()
 		AddLogMessage(_T("리소스 잠금 실패"));
 		return FALSE;
 	}
-
 	// 리소스 데이터를 메모리에 복사
 	std::vector<BYTE> buffer(pEncData, pEncData + dwSize);
 
@@ -595,7 +670,12 @@ BOOL CfrpcguiDlg::StartFrpcProcess(BOOL isRetry)
 	// frpc.ini 생성
 	GenerateFrpcIni(remotePort, proxyName);
 
-	// 이전 프로세스가 있다면 종료
+	// 생성된 frpc.ini 를 기준으로 컨트롤 다시 표출
+	m_remotePort = remotePort;
+	m_deviceName = proxyName;
+	UpdateData(FALSE);
+
+	// 기존 프로세스 종료
 	StopFrpcProcess();
 
 	// 파이프 생성
@@ -637,13 +717,15 @@ BOOL CfrpcguiDlg::StartFrpcProcess(BOOL isRetry)
 		AddLogMessage(_T("frpc 실행 실패"));
 		CloseHandle(m_hChildStd_OUT_Rd);
 		CloseHandle(m_hChildStd_OUT_Wr);
+		m_hChildStd_OUT_Rd = NULL;
+		m_hChildStd_OUT_Wr = NULL;
 		return FALSE;
 	}
 
 	// 프로세스 실행 성공 후
 	m_frpcProcess = pi;
 
-	// 부모는 쓰기 핸들이 필요 없음. 바로 닫는다.
+	// 부모는 쓰기 핸들이 필요 없으므로 즉시 닫음 -> EOF 처리 가능
 	if (m_hChildStd_OUT_Wr)
 	{
 		CloseHandle(m_hChildStd_OUT_Wr);
@@ -664,8 +746,7 @@ void CfrpcguiDlg::StopFrpcProcess()
 
 	if (m_frpcProcess.hProcess != NULL)
 	{
-		// 정상 종료를 유도하는 로직(예: frpc에게 종료 명령 보내기)을 시도할 수 있음.
-		// 여기서는 예시로 1초 기다린 후 프로세스가 아직 살아있다면 강제 종료
+		// 정상 종료 유도(방법이 없다면 바로 terminate)
 		if (WaitForSingleObject(m_frpcProcess.hProcess, 1000) == WAIT_TIMEOUT)
 		{
 			// 아직 프로세스가 종료되지 않았으므로 강제 종료
@@ -714,41 +795,43 @@ UINT CfrpcguiDlg::LogReaderThread(LPVOID pParam)
 
 	while (WaitForSingleObject(pDlg->m_stopEvent, 10) != WAIT_OBJECT_0)
 	{
-		// Non-blocking I/O 처리가 필요할 수도 있으나 여기서는 단순히 시도
-		if (!ReadFile(hRead, buf, sizeof(buf) - 1, &dwRead, NULL) || dwRead == 0)
+		if (!ReadFile(hRead, buf, 255, &dwRead, NULL) || dwRead == 0)
 		{
-			// 더 이상 읽을 데이터가 없거나 프로세스 종료 시
+			// EOF or 프로세스 종료
 			break;
 		}
 
 		buf[dwRead] = '\0';
 		buffer.append(buf);
 
-		// 개행('\n') 또는 캐리지 리턴('\r') 모두 줄 구분자로 처리
-		size_t pos;
-		while ((pos = buffer.find_first_of("\r\n")) != std::string::npos) {
+		// 개행(\n, \r\n)을 기준으로 라인 파싱
+		size_t pos = 0;
+		while ((pos = buffer.find_first_of("\r\n")) != std::string::npos)
+		{
 			std::string line = buffer.substr(0, pos);
 			buffer.erase(0, buffer.find_first_not_of("\r\n", pos));
 
 			// 라인이 비어있을 수 있으므로 체크
-			if (!line.empty()) {
-				// UTF-8 가정이 아니라면 CP_ACP 사용
+			if (!line.empty())
+			{
 				CString wLine = CA2T(line.c_str(), CP_ACP);
 				pDlg->PostMessage(WM_USER_LOG_LINE, 0, (LPARAM)new CString(wLine));
 			}
 		}
 
-		// 만약 아무 개행이 없어도 일정 길이를 초과하면 출력
-		if (buffer.size() > 1024) {
-			// 임시로 누적된 데이터를 한번에 출력
+		// 혹시 개행이 전혀 없는 경우, 일정 길이 이상이면 출력
+		if (buffer.size() > 1024)
+		{
+			// 임시로 누적된 데이터를 한 번에 출력
 			CString wLine = CA2T(buffer.c_str(), CP_ACP);
 			pDlg->PostMessage(WM_USER_LOG_LINE, 0, (LPARAM)new CString(wLine));
 			buffer.clear();
 		}
 	}
 
-	// 루프 탈출 시 남은 buffer가 있으면 마지막으로 출력
-	if (!buffer.empty()) {
+	// 남은 데이터 출력
+	if (!buffer.empty())
+	{
 		CString wLine = CA2T(buffer.c_str(), CP_ACP);
 		pDlg->PostMessage(WM_USER_LOG_LINE, 0, (LPARAM)new CString(wLine));
 	}
@@ -775,7 +858,7 @@ LRESULT CfrpcguiDlg::OnLogLine(WPARAM wParam, LPARAM lParam)
 		lowerLine.Find(_T("already in use")) != -1 ||
 		(lowerLine.Find(_T("proxy")) != -1 && lowerLine.Find(_T("already exists")) != -1))
 	{
-		if (m_retryCount < MAX_RETRIES)
+		if (m_retryCount < MAX_RETRIES && WaitForSingleObject(m_stopEvent, 0) == WAIT_TIMEOUT)
 		{
 			m_retryCount++;
 			AddLogMessage(_T("포트 충돌 발생, 다른 포트로 재시도합니다."));
@@ -789,6 +872,7 @@ LRESULT CfrpcguiDlg::OnLogLine(WPARAM wParam, LPARAM lParam)
 			StopFrpcProcess();
 			// 재시도 실패 후 UI 복구
 			GetDlgItem(IDC_BUTTON_START)->EnableWindow(TRUE);
+			GetDlgItem(IDC_BUTTON_STOP)->EnableWindow(FALSE);
 			GetDlgItem(IDC_EDIT_DEVICE_NAME)->EnableWindow(TRUE);
 			GetDlgItem(IDC_EDIT_SERVER_ADDRESS)->EnableWindow(TRUE);
 			GetDlgItem(IDC_EDIT_SERVER_PORT)->EnableWindow(TRUE);
@@ -802,18 +886,19 @@ LRESULT CfrpcguiDlg::OnLogLine(WPARAM wParam, LPARAM lParam)
 	{
 		m_successStarted = TRUE;
 		GetDlgItem(IDC_BUTTON_START)->EnableWindow(FALSE);
+		GetDlgItem(IDC_BUTTON_STOP)->EnableWindow(TRUE);
 		GetDlgItem(IDC_EDIT_DEVICE_NAME)->EnableWindow(FALSE);
 		GetDlgItem(IDC_EDIT_SERVER_ADDRESS)->EnableWindow(FALSE);
 		GetDlgItem(IDC_EDIT_SERVER_PORT)->EnableWindow(FALSE);
 		GetDlgItem(IDC_EDIT_AUTH_TOKEN)->EnableWindow(FALSE);
 		GetDlgItem(IDC_EDIT_LOCAL_PORT)->EnableWindow(FALSE);
 		GetDlgItem(IDC_EDIT_REMOTE_PORT)->EnableWindow(FALSE);
+		AddLogMessage(_T("프록시가 성공적으로 시작되었습니다."));
 	}
 
-	// 그 외 다른 상태 파악 가능
 	if (lowerLine.Find(_T("login to server success")) != -1)
 	{
-		// 서버 접속 성공 로직
+		AddLogMessage(_T("서버에 성공적으로 접속하였습니다."));
 	}
 
 	return 0;
@@ -836,6 +921,7 @@ int CfrpcguiDlg::GetValidPortOrRandom(int desiredPort)
 
 void CfrpcguiDlg::GenerateFrpcIni(int remotePort, const CString & proxyName)
 {
+	// 컨트롤의 값을 가져오기
 	UpdateData(TRUE);
 
 	CString iniText;
