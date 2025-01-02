@@ -22,7 +22,10 @@ public:
 
 // 재정의입니다.
 public:
+	HANDLE m_hMutex;
 	virtual BOOL InitInstance();
+	virtual int ExitInstance();
+	void ActivateExistingInstance();
 
 // 구현입니다.
 
