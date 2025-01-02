@@ -10,6 +10,7 @@
 #include <map>
 #include <sstream>
 #include <VersionHelpers.h>
+#include <random>
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -61,7 +62,6 @@ CfrpcguiDlg::CfrpcguiDlg(CWnd* pParent /*=NULL*/)
 	, m_localPort(9500)
 	, m_remotePort(9999)
 	, m_autoStart(FALSE)
-	, m_retryCount(0)
 	, m_successStarted(FALSE)
 	, m_stopEvent(TRUE, FALSE)
 {
@@ -507,9 +507,8 @@ void CfrpcguiDlg::OnBnClickedButtonStart()
 	// 버튼 컨트롤 비활성화
 	GetDlgItem(IDC_BUTTON_START)->EnableWindow(FALSE);
 	GetDlgItem(IDC_BUTTON_STOP)->EnableWindow(TRUE);
-	// 이벤트 초기화 및 재시도 변수 리셋
+	// 스레드 정지 요청 이벤트 리셋
 	m_stopEvent.ResetEvent();
-	m_retryCount = 0;
 	m_successStarted = FALSE;
 
 	AddLogMessage(_T("frpc 시작 시도 중..."));
@@ -676,11 +675,9 @@ BOOL CfrpcguiDlg::StartFrpcProcess(BOOL isRetry)
 {
 	if (!isRetry)
 	{
-		// 먼저 재시도 카운트 초기화
-		m_retryCount = 0;
-		m_successStarted = FALSE;
 		// 스레드 정지 요청 이벤트 리셋
 		m_stopEvent.ResetEvent();
+		m_successStarted = FALSE;
 	}
 
 	// 현재 remotePort 값으로 유효한 포트 할당
@@ -906,40 +903,17 @@ LRESULT CfrpcguiDlg::OnLogLine(WPARAM wParam, LPARAM lParam)
 
 	if (lowerLine.Find(_T("port already used")) != -1 || lowerLine.Find(_T("already in use")) != -1)
 	{
-		if (m_retryCount < MAX_RETRIES && WaitForSingleObject(m_stopEvent, 0) == WAIT_TIMEOUT)
-		{
-			AddLogMessage(_T("포트 충돌 발생, 다른 포트로 재시도합니다."));
-			m_retryCount++;
-			m_remotePort = 0; // 랜덤 포트 할당
-			StopFrpcProcess();
-			StartFrpcProcess(TRUE);
-		}
-		else
-		{
-			AddLogMessage(_T("포트 재시도 횟수를 초과했습니다. 프로세스를 중지합니다."));
-			StopFrpcProcess();
-			GetDlgItem(IDC_BUTTON_START)->EnableWindow(TRUE);
-			GetDlgItem(IDC_BUTTON_STOP)->EnableWindow(FALSE);
-			GetDlgItem(IDC_EDIT_DEVICE_NAME)->EnableWindow(TRUE);
-			GetDlgItem(IDC_EDIT_SERVER_ADDRESS)->EnableWindow(TRUE);
-			GetDlgItem(IDC_EDIT_SERVER_PORT)->EnableWindow(TRUE);
-			GetDlgItem(IDC_EDIT_AUTH_TOKEN)->EnableWindow(TRUE);
-			GetDlgItem(IDC_EDIT_LOCAL_PORT)->EnableWindow(TRUE);
-			GetDlgItem(IDC_EDIT_REMOTE_PORT)->EnableWindow(TRUE);
-		}
+		AddLogMessage(_T("포트 충돌이 발생하였습니다. 다른 포트로 재시도합니다."));
+		m_remotePort = 0; // 랜덤 포트 할당
+		StopFrpcProcess();
+		StartFrpcProcess(TRUE);
 	}
 	else if (lowerLine.Find(_T("proxy")) != -1 && lowerLine.Find(_T("already exists")) != -1)
 	{
-		AddLogMessage(_T("중복된 장치명입니다. 장치명을 변경해주세요."));
+		AddLogMessage(_T("중복된 장치명입니다. 장치명을 무작위로 생성합니다."));
+		m_deviceName = _T(""); // 랜덤 장치명 할당
 		StopFrpcProcess();
-		GetDlgItem(IDC_BUTTON_START)->EnableWindow(TRUE);
-		GetDlgItem(IDC_BUTTON_STOP)->EnableWindow(FALSE);
-		GetDlgItem(IDC_EDIT_DEVICE_NAME)->EnableWindow(TRUE);
-		GetDlgItem(IDC_EDIT_SERVER_ADDRESS)->EnableWindow(TRUE);
-		GetDlgItem(IDC_EDIT_SERVER_PORT)->EnableWindow(TRUE);
-		GetDlgItem(IDC_EDIT_AUTH_TOKEN)->EnableWindow(TRUE);
-		GetDlgItem(IDC_EDIT_LOCAL_PORT)->EnableWindow(TRUE);
-		GetDlgItem(IDC_EDIT_REMOTE_PORT)->EnableWindow(TRUE);
+		StartFrpcProcess(TRUE);
 	}
 	else if (lowerLine.Find(_T("token in login doesn't match")) != -1)
 	{
@@ -953,6 +927,12 @@ LRESULT CfrpcguiDlg::OnLogLine(WPARAM wParam, LPARAM lParam)
 		GetDlgItem(IDC_EDIT_AUTH_TOKEN)->EnableWindow(TRUE);
 		GetDlgItem(IDC_EDIT_LOCAL_PORT)->EnableWindow(TRUE);
 		GetDlgItem(IDC_EDIT_REMOTE_PORT)->EnableWindow(TRUE);
+	}
+	else if (lowerLine.Find(_T("i/o timeout")) != -1 || lowerLine.Find(_T("no such host")) != -1)
+	{
+		AddLogMessage(_T("서버에 접속하지 못하였습니다. 재시도합니다."));
+		StopFrpcProcess();
+		StartFrpcProcess(TRUE);
 	}
 	else if (lowerLine.Find(_T("login to server success")) != -1)
 	{
@@ -981,12 +961,21 @@ int CfrpcguiDlg::GetValidPortOrRandom(int desiredPort)
 	if (desiredPort <= 0)
 	{
 		// 랜덤 포트 할당
-		srand((UINT)time(NULL));
-		return rand() % (65535 - 10000) + 10000;
+		const int minPort = 10000;
+		const int maxPort = 65535;
+
+		// C++11 난수 생성기 사용
+		std::random_device rd; // 랜덤 디바이스
+		std::mt19937 gen(rd()); // Mersenne Twister 엔진
+		std::uniform_int_distribution<> dist(minPort, maxPort);
+
+		return dist(gen); // 난수를 기반으로 포트 반환
 	}
+
 	if (desiredPort >= 1 && desiredPort <= 65535)
 		return desiredPort;
-	return -1; // invalid
+
+	return -1; // 유효하지 않은 포트
 }
 
 
@@ -1032,9 +1021,15 @@ CString CfrpcguiDlg::GenerateProxyName()
 		// 랜덤 생성
 		const TCHAR chars[] = _T("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
 		CString randStr;
-		for (int i = 0; i < 10; i++)
+
+		// C++11 난수 생성기 사용
+		std::random_device rd; // 랜덤 디바이스 (시드 생성)
+		std::mt19937 gen(rd()); // Mersenne Twister 엔진
+		std::uniform_int_distribution<> dist(0, sizeof(chars) / sizeof(TCHAR) - 2);
+
+		for (int i = 0; i < 20; i++)
 		{
-			randStr.AppendChar(chars[rand() % (sizeof(chars) / sizeof(TCHAR) - 1)]);
+			randStr.AppendChar(chars[dist(gen)]); // 난수를 기반으로 문자 추가
 		}
 		name = randStr;
 	}

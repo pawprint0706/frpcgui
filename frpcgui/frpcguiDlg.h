@@ -11,9 +11,6 @@
 #define WM_USER_HIDE_WINDOW (WM_USER + 101)	// 창 숨기기용
 #define WM_USER_LOG_LINE (WM_USER + 102)	// 로그라인 수신용
 
-// 포트 재시도 최대 횟수
-#define MAX_RETRIES 30
-
 // CfrpcguiDlg 대화 상자
 class CfrpcguiDlg : public CDialogEx
 {
@@ -57,7 +54,6 @@ public:
 	HANDLE m_hChildStd_OUT_Wr;			// stdout 리다이렉트 파이프 핸들(Write)
 	CWinThread* m_pLogThread;			// 로그 읽기용 쓰레드 핸들
 	CEvent m_stopEvent;		// 스레드 정지 요청 이벤트
-	int m_retryCount;		// 포트 재시도 관련 변수
 	BOOL m_successStarted;	// 프록시 시작 성공 여부
 
 	// 멤버함수 선언
